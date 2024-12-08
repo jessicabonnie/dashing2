@@ -1,26 +1,59 @@
+// Core header files
 #include "sketch_core.h"
 #include "cmp_main.h"
 #include <cinttypes>
 
 namespace dashing2 {
+
+// Memory signature threshold used for sketching
 extern size_t MEMSIGTHRESH;
 
+/**
+ * Calculates total size in bytes of files listed in a line
+ * @param line String containing file paths separated by delimiters
+ * @return Total size in bytes of all files in the line
+ */
 INLINE size_t nbytes_from_line(const std::string &line) {
     size_t ret = 0;
     for_each_substr([&ret](const std::string &s) {ret += bns::filesize(s.data());}, line);
     return ret;
 }
 
+/**
+ * Core sketching function that processes input files and generates sketches
+ * 
+ * This function handles different input data types (FASTX, LeafCutter, BED, BigWig)
+ * and generates sketches according to the specified options. It can:
+ * - Process FASTX files either by sequence or by file
+ * - Handle LeafCutter junction files
+ * - Process BED and BigWig genomic data files
+ * - Generate sketches with different result types (full m-mer sequences or standard sketches)
+ * - Write results to output files including sketches, names, and k-mer counts
+ * 
+ * @param result SketchingResult object to store generated sketches and metadata
+ * @param opts Options controlling sketching behavior and output
+ * @param paths Vector of input file paths to process
+ * @param outfile Path to write output files
+ * @return Reference to populated SketchingResult object
+ */
 SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts, const std::vector<std::string> &paths, std::string &outfile) {
+    // Validate output file is specified for sequence mode
     if(opts.kmer_result() == FULL_MMER_SEQUENCE && outfile.empty()) {
         THROW_EXCEPTION(std::runtime_error("outfile must be specified for --seq mode."));
     }
+
+    // Set memory thresholds for signatures and kmers
     result.signatures_.memthreshold(MEMSIGTHRESH);
     result.kmers_.memthreshold(MEMSIGTHRESH);
+
     const size_t npaths = paths.size();
     std::string tmpfile;
+
+    // Handle different input data types
     if(opts.dtype_ == DataType::FASTX) {
+        // Process FASTX files
         if(opts.parse_by_seq_) {
+            // Parse by sequence - currently limited to one file
             if(paths.size() != 1) {
                 result.nperfile_.resize(paths.size());
                 THROW_EXCEPTION(std::runtime_error("parse-by-seq currently only handles one file at a time. To process multiple files, simply concatenate them into one file, and run dashing2 on that."));
@@ -28,29 +61,41 @@ SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts,
             KSeqHolder kseqs(std::max(opts.nthreads(), 1u));
             fastx2sketch_byseq(result, opts, paths.front(), kseqs.kseqs_, outfile, true, 512);
         } else {
+            // Parse by file
             fastx2sketch(result, opts, paths, outfile);
         }
     } else if(opts.dtype_ == DataType::LEAFCUTTER) {
+        // Process LeafCutter junction files
         if(outfile.empty()) THROW_EXCEPTION(std::runtime_error("Outfile required for LeafCutter input."));
+        
+        // Generate sketches from LeafCutter data
         auto res = lf2sketch(paths, opts);
         result.names_ = std::move(res.sample_names());
         result.nperfile_.resize(res.nsamples_per_file().size());
         std::copy(res.nsamples_per_file().begin(), res.nsamples_per_file().end(), result.nperfile_.begin());
+
+        // Write sketch metadata to output file
         std::FILE *of = bfopen(outfile.data(), "wb");
         uint64_t ns = result.names_.size();
         checked_fwrite(&ns, sizeof(ns), 1, of);
         ns = opts.sketchsize_;
         checked_fwrite(&ns, sizeof(ns), 1, of);
         std::fclose(of);
+
+        // Copy registers to signatures
         result.signatures_.assign(outfile);
         result.signatures_.resize(res.registers().size());
         std::copy(res.registers().begin(), res.registers().end(), result.signatures_.begin());
+
     } else if(opts.dtype_ == DataType::BED || opts.dtype_ == DataType::BIGWIG) {
+        // Process BED or BigWig files
         std::vector<std::pair<size_t, uint64_t>> filesizes = get_filesizes(paths);
         result.signatures_.resize(npaths * opts.sketchsize_);
         result.names_.resize(npaths);
         result.cardinalities_.resize(npaths);
+
         if(opts.dtype_ == DataType::BED) {
+            // Process BED files in parallel
             OMP_PFOR_DYN
             for(size_t i = 0; i < npaths; ++i) {
                 auto myind = filesizes.size() ? filesizes[i].second: uint64_t(i);
@@ -61,11 +106,14 @@ SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts,
                 std::copy(sig.begin(), sig.end(), &result.signatures_[myind * opts.sketchsize_]);
             }
         } else {
-            // BigWig sketching is parallelized within files
+            // Process BigWig files
             if(opts.by_chrom_) {
+                // Process by chromosome
                 std::vector<flat_hash_map<std::string, std::vector<RegT>>> bc(npaths);
                 std::vector<flat_hash_map<std::string, double>> dbc(npaths);
                 result.nperfile_.resize(npaths);
+
+                // Generate sketches for each file
                 for(size_t i = 0; i < npaths; ++i) {
                     auto &p = paths[i];
                     auto res = bw2sketch(p, opts, /*parallel_process=*/true);
@@ -75,13 +123,15 @@ SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts,
                     bc[i] = std::move(*res.chrmap_.get());
                     dbc[i] = std::move(res.cardmap_);
                     DBG_ONLY(std::fprintf(stderr, "Cardinality %g found from path %s/%zu\n", res.card_, p.data(), i);)
-                    //std::copy(sigs.begin(), sigs.end(), &result.signatures_[opts.sketchsize_* i]);
                 }
+
+                // Combine chromosome results
                 const size_t total_n = std::accumulate(result.nperfile_.begin(), result.nperfile_.end(), size_t(0));
                 size_t offset = 0;
                 result.signatures_.resize(total_n * opts.sketchsize_);
                 result.names_.resize(total_n);
                 result.cardinalities_.resize(total_n);
+
                 for(size_t i = 0; i < npaths; ++i) {
                     size_t myi = 0;
                     for(const auto &pair: bc[i]) {
@@ -93,6 +143,7 @@ SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts,
                     offset += bc[i].size();
                 }
             } else {
+                // Process whole files in parallel
                 OMP_PFOR_DYN
                 for(size_t i = 0; i < npaths; ++i) {
                     auto myind = filesizes.size() ? filesizes[i].second: uint64_t(i);
@@ -105,9 +156,14 @@ SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts,
             }
         }
     }
+
+    // Write results to output files
     std::FILE *ofp;
     if(opts.kmer_result_ == FULL_MMER_SEQUENCE) {
+        // Write full m-mer sequence results
         if((ofp = bfopen(outfile.data(), "r+")) == nullptr) THROW_EXCEPTION(std::runtime_error("Failed to open output file for mmer sequence results."));
+        
+        // Write metadata
         size_t offset = result.names_.size();
         checked_fwrite(&offset, sizeof(offset), 1, ofp);
         {
@@ -117,6 +173,8 @@ SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts,
             uint32_t dtype = (uint32_t)opts.input_mode() | (int(opts.canonicalize()) << 8);
             checked_fwrite(&dtype, sizeof(dtype), 1, ofp);
         }
+
+        // Write cardinalities and signatures
         checked_fwrite(result.cardinalities_.data(), sizeof(double), result.cardinalities_.size(), ofp);
         offset = 0;
         for(size_t i = 0; i < result.nperfile_.size(); ++i) {
@@ -127,8 +185,9 @@ SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts,
         }
         std::fclose(ofp);
     } else {
+        // Write standard sketch results
         if(outfile.size() && outfile != "/dev/stdout" && outfile != "-") {
-            // This should not overlap with the memory mapped for result.signatures_
+            // Write to file
             const uint64_t t = result.cardinalities_.size();
             std::FILE *fp = bfopen(outfile.data(), "r+");
             if(!fp) THROW_EXCEPTION(std::runtime_error("Failed to open file "s + outfile + " for in-place modification"));
@@ -143,6 +202,8 @@ SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts,
             }
         }
     }
+
+    // Write names and cardinalities to text file
     if(!outfile.empty() && result.names_.size()) {
         if((ofp = bfopen((outfile + ".names.txt").data(), "wb")) == nullptr)
             THROW_EXCEPTION(std::runtime_error(std::string("Failed to open outfile at ") + outfile + ".names.txt"));
@@ -159,6 +220,8 @@ SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts,
         }
         std::fclose(ofp);
     }
+
+    // Write k-mer counts if present
     if(!outfile.empty() && result.kmercounts_.size()) {
         const size_t nb = result.kmercounts_.size() * sizeof(decltype(result.kmercounts_)::value_type);
         DBG_ONLY(std::fprintf(stderr, "Writing kmercounts of size %zu\n", result.kmercounts_.size());)
@@ -172,6 +235,16 @@ SketchingResult &sketch_core(SketchingResult &result, Dashing2DistOptions &opts,
     return result;
 }
 
+/**
+ * Gets file sizes for a list of paths in parallel
+ * 
+ * Calculates the size of each file in the input paths vector and returns
+ * a sorted vector of pairs containing the file size and original index.
+ * Files are sorted by size in descending order.
+ * 
+ * @param paths Vector of file paths to get sizes for
+ * @return Vector of pairs containing file size and original index, sorted by size
+ */
 std::vector<std::pair<size_t, uint64_t>> get_filesizes(const std::vector<std::string> &paths) {
     const size_t npaths = paths.size();
     std::vector<std::pair<size_t, uint64_t>> filesizes(npaths);
