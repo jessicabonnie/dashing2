@@ -6,14 +6,16 @@
 
 namespace dashing2 {
 
+// Macro to define common command line options for comparison functionality
 #define CMP_OPTS(name) \
 static option_struct name[] = {\
     LO_FLAG("presketched", OPTARG_PRESKETCHED, presketched, true)\
     SHARED_OPTS\
 }
 
-
-
+/**
+ * Prints usage information for the comparison functionality
+ */
 void cmp_usage() {
     std::fprintf(stderr, "dashing2 cmp <opts> [fastas... (optional)]\n"
                          "We use only m-mers; if w <= k, however, this reduces to k-mers if the -w/--window-size is unspecified.\n"
@@ -21,6 +23,14 @@ void cmp_usage() {
                          SHARED_DOC_LINES
     );
 }
+
+/**
+ * Loads sketching results from files into memory
+ * 
+ * @param opts Options controlling how results are loaded
+ * @param result Container for loaded sketch data
+ * @param paths Paths to files containing sketch data
+ */
 void load_results(Dashing2DistOptions &opts, SketchingResult &result, const std::vector<std::string> &paths) {
     DBG_ONLY(std::fprintf(stderr, "Loading results using Dashing2Options: %s\n", opts.to_string().data());)
     if(verbosity >= Verbosity::INFO) {
@@ -37,6 +47,7 @@ void load_results(Dashing2DistOptions &opts, SketchingResult &result, const std:
     }
     const std::string namesf = pf + ".names.txt";
     if(paths.size() == 1) {
+        // Handle single stacked sketch file
         if(verbosity >= INFO) {
             std::fprintf(stderr, "Reading stacked sketches from %s. Names files is %s\n", paths.front().data(), namesf.data());
         }
@@ -197,6 +208,14 @@ void load_results(Dashing2DistOptions &opts, SketchingResult &result, const std:
     }
 }
 
+/**
+ * Main entry point for comparison functionality
+ * Parses command line arguments and executes comparison workflow
+ * 
+ * @param argc Number of command line arguments
+ * @param argv Array of command line argument strings
+ * @return Exit code (0 for success)
+ */
 int cmp_main(int argc, char **argv) {
     int c;
     int k = -1, w = 0, nt = -1;
@@ -366,7 +385,13 @@ int cmp_main(int argc, char **argv) {
     return 0;
 }
 
-
+/**
+ * Calculates default batch size for processing based on cache size and options
+ * 
+ * @param batch_size Reference to batch size variable to set
+ * @param opts Options controlling batch size calculation
+ * @return Calculated batch size
+ */
 size_t default_batchsize(size_t &batch_size, const Dashing2DistOptions &opts) {
     if(batch_size == 0) {
         if(opts.kmer_result_ <= FULL_SETSKETCH) {

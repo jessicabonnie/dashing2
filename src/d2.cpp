@@ -2,11 +2,22 @@
 #include <filesystem>
 
 namespace dashing2 {
+
+// Forward declarations of main functions for different subcommands
 int cmp_main(int argc, char **argv);
 int contain_main(int argc, char **argv);
 int wsketch_main(int argc, char **argv);
 int sketch_main(int argc, char **argv);
 int printmin_main(int argc, char **argv);
+
+/**
+ * Converts Dashing2Options object to string representation
+ * 
+ * Creates a string containing all the relevant options and settings
+ * including k-mer size, window size, parsing mode, sketch parameters etc.
+ *
+ * @return String representation of options
+ */
 std::string Dashing2Options::to_string() const {
     size_t m = 4096;
     std::string ret(m, '\0');
@@ -42,12 +53,27 @@ std::string Dashing2Options::to_string() const {
     return ret;
 }
 
+/**
+ * Sets up filter set from a string argument
+ * 
+ * Parses filter set argument which may contain a path and type indicator
+ *
+ * @param fsarg Filter set argument string
+ */
 void Dashing2Options::filterset(const std::string &fsarg) {
     if(fsarg.empty()) return;
     auto i = fsarg.find_last_of(':');
     filterset(fsarg.substr(0, i), (i != std::string::npos && static_cast<char>(fsarg[i + 1] & 0xdf) != 'K'));
 }
 
+/**
+ * Sets up filter set from path and type
+ * 
+ * Creates and populates filter set from file path, handling both k-mer and sequence inputs
+ *
+ * @param path Path to filter set file
+ * @param is_kmer Whether input is k-mer based (true) or sequence based (false)
+ */
 void Dashing2Options::filterset(const std::string &path, bool is_kmer) {
     fs_.reset(new FilterSet());
     if(is_kmer) {
@@ -96,6 +122,12 @@ void Dashing2Options::filterset(const std::string &path, bool is_kmer) {
     }
     fs_->finalize();
 }
+
+/**
+ * Validates options configuration
+ * 
+ * Checks for valid combinations of options and adjusts settings if needed
+ */
 void Dashing2Options::validate() const {
     if(canonicalize() && rh_.hashtype() != bns::DNA) {
         canonicalize(false);
@@ -107,11 +139,19 @@ void Dashing2Options::validate() const {
     }
 }
 
+// Global variables
 bool entmin = false;
 int verbosity = 0;
 
 } // dashing2
 
+/**
+ * Displays usage information for main program
+ * 
+ * Prints descriptions of available subcommands and their purposes
+ *
+ * @return Always returns 1
+ */
 int main_usage() {
     std::fprintf(stderr, "dashing2 has several subcommands: sketch, cmp, wsketch, and contain.\n");
     std::fprintf(stderr, "Usage can be seen in those subcommands. (e.g., `dashing2 sketch -h`)\n\n");
@@ -127,9 +167,18 @@ int main_usage() {
     std::fprintf(stderr, "printmin: Emit minimizer sequence sets in human-readable form.\n");
     return 1;
 }
+
 using namespace dashing2;
 
-
+/**
+ * Main entry point for dashing2 program
+ * 
+ * Parses command line arguments and dispatches to appropriate subcommand
+ *
+ * @param argc Number of command line arguments
+ * @param argv Array of command line argument strings
+ * @return Exit status code
+ */
 int main(int argc, char **argv) {
     std::string cmd(std::filesystem::absolute(std::filesystem::path(argv[0])));
     for(char **s = (argv + 1); *s; cmd += std::string(" ") + *s++);

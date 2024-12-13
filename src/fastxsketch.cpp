@@ -7,38 +7,71 @@
 namespace dashing2 {
 using namespace variation;
 
-
+/**
+ * Prints the FastxSketchingResult to stderr
+ */
 void FastxSketchingResult::print() {
     std::fprintf(stderr, "%s\n", str().data());
 }
 
+/**
+ * Type alias for register type based on size
+ * Uses uint32_t for 4-byte RegT, uint64_t for 8-byte RegT, or u128_t otherwise
+ */
 using BKRegT = std::conditional_t<(sizeof(RegT) == 4), uint32_t, std::conditional_t<(sizeof(RegT) == 8), uint64_t, u128_t>>;
 
+/**
+ * Helper function to maintain a fixed-size priority queue
+ * Adds an element if queue size is less than k, otherwise replaces top element if new element is smaller
+ * @param c Priority queue container
+ * @param x Element to add
+ * @param k Maximum size of queue
+ */
 template<typename C, typename T>
 void pop_push(C &c, T &&x, size_t k) {
     if(c.size() < k) c.push(std::move(x));
     else if(x < c.top()) {c.pop(); c.push(std::move(x));}
 }
 
+/**
+ * Finds the k smallest elements from a source vector
+ * @param src Source vector to find smallest elements from
+ * @param ret Vector to store k smallest elements
+ * @param threshold Minimum threshold value to consider
+ * @param ptr Optional pointer to counts array
+ * @param weighted Whether to use weighted selection (-1 auto-detects based on ptr)
+ */
 template<typename SrcT, typename CountT=uint32_t>
 void bottomk(const std::vector<SrcT> &src, std::vector<BKRegT> &ret, double threshold=0., const CountT *ptr=(CountT *)nullptr, int weighted=-1) {
+    // Auto-detect weighted mode if not explicitly specified
     if(weighted < 0) weighted = ptr != 0;
+    
     const size_t k = ret.size(), sz = src.size();
-    std::priority_queue<BKRegT> pq;
-    std::priority_queue<std::pair<double, BKRegT>> wpq;
+    
+    // Priority queues for weighted and unweighted modes
+    std::priority_queue<BKRegT> pq;                              // For unweighted selection
+    std::priority_queue<std::pair<double, BKRegT>> wpq;         // For weighted selection
+    
+    // Process each element in source vector
     for(size_t i = 0; i < sz; ++i) {
         const auto item = src[i];
-        const CountT count = ptr ? ptr[i]: CountT(1);
+        const CountT count = ptr ? ptr[i]: CountT(1);           // Get count from ptr if available, else use 1
+        
+        // Only process elements above threshold
         if(count > threshold) {
             if(weighted) {
+                // For weighted mode, use item/count as priority key
                 const std::pair<double, BKRegT> key {double(item / count), item};
                 pop_push(wpq, key, k);
             } else {
+                // For unweighted mode, use item directly
                 const BKRegT key = item;
                 pop_push(pq, key, k);
             }
         }
     }
+    
+    // Copy k smallest elements to result vector in ascending order
     if(weighted) {
         for(size_t i = k; i > 0;ret[--i] = wpq.top().second, wpq.pop());
     } else {
@@ -46,6 +79,10 @@ void bottomk(const std::vector<SrcT> &src, std::vector<BKRegT> &ret, double thre
     }
 }
 
+/**
+ * Gets the number of OpenMP threads available
+ * @return Number of threads (1 if OpenMP not enabled)
+ */
 int32_t num_threads() {
     int nt = 1;
 #ifdef _OPENMP
@@ -56,33 +93,52 @@ int32_t num_threads() {
 #endif
     return nt;
 }
-
+/**
+ * Loads and copies sketch data from a file into memory
+ * @tparam T Type of sketch data (usually RegT)
+ * @tparam chunk_size Size of chunks to read at a time (default 65536)
+ * @param path Path to input file containing sketch data
+ * @param ptr Pointer to pre-allocated memory to copy data into
+ * @param cardinality Pointer to store cardinality value read from file
+ * @param ss Expected sketch size in number of elements
+ * @return Number of elements read from file
+ */
 template<typename T, size_t chunk_size = 65536>
 size_t load_copy(const std::string &path, T *ptr, double *cardinality, const size_t ss) {
     T *const origptr = ptr;
+
+    // Handle gzipped files
     if(path.size() > 3 && std::equal(path.data() + path.size() - 3, &path[path.size()], ".gz")) {
         gzFile fp = gzopen(path.data(), "rb");
         if(!fp) return 0; //THROW_EXCEPTION(std::runtime_error(std::string("Failed to open file at ") + path));
         gzread(fp, cardinality, sizeof(*cardinality));
+        // Read data in chunks until EOF or error
         for(int nr;
             !gzeof(fp) && (nr = gzread(fp, ptr, sizeof(T) * chunk_size)) == sizeof(T) * chunk_size;
             ptr += nr / sizeof(T));
         gzclose(fp);
         return ptr - origptr;
-    } else if(path.size() > 3 && std::equal(path.data() + path.size() - 3, &path[path.size()], ".xz")) {
+    }
+    // Handle xz compressed files 
+    else if(path.size() > 3 && std::equal(path.data() + path.size() - 3, &path[path.size()], ".xz")) {
         auto cmd = std::string("xz -dc ") + path;
         std::FILE *fp = ::popen(cmd.data(), "r");
         if(fp == 0) return 0;
         std::fread(cardinality, sizeof(*cardinality), 1, fp);
+        // Read data in chunks
         for(auto up = (uint8_t *)ptr;!std::feof(fp) && std::fread(up, sizeof(T), chunk_size, fp) == chunk_size; up += chunk_size * sizeof(T));
         ::pclose(fp);
         return ptr - origptr;
     }
+
+    // Handle uncompressed files
     std::FILE *fp = bfopen(path.data(), "rb");
     if(!fp) THROW_EXCEPTION(std::runtime_error(std::string("Failed to open ") + path));
     std::fread(cardinality, sizeof(*cardinality), 1, fp);
     const int fd = ::fileno(fp);
     size_t sz = 0;
+
+    // If file is not a terminal, use fstat to get size and read in one go
     if(!::isatty(fd)) {
         struct stat st;
         if(::fstat(fd, &st)) THROW_EXCEPTION(std::runtime_error(std::string("Failed to fstat") + path));
@@ -90,11 +146,13 @@ size_t load_copy(const std::string &path, T *ptr, double *cardinality, const siz
             std::fprintf(stderr, "Warning: Empty file found at %s\n", path.data());
             return 0;
         }
+        // Validate expected file size matches sketch size
         size_t expected_bytes = st.st_size - 8;
         const size_t expected_sketch_nb = ss * sizeof(T);
         if(expected_bytes != expected_sketch_nb) {
             std::fprintf(stderr, "Expected %zu bytes of sketch, found %zu\n", expected_sketch_nb, expected_bytes);
         }
+        // Read entire file at once
         size_t nb = std::fread(ptr, 1, expected_bytes, fp);
         if(nb != expected_bytes) {
             std::fprintf(stderr, "Read %zu bytes instead of %zu for file %s\n", nb, expected_bytes, path.data());
@@ -102,7 +160,9 @@ size_t load_copy(const std::string &path, T *ptr, double *cardinality, const siz
             THROW_EXCEPTION(std::runtime_error("Error in reading from file"));
         }
         sz = expected_bytes / sizeof(T);
-    } else {
+    }
+    // For terminals, read in chunks
+    else {
         auto up = (uint8_t *)ptr;
         for(;!std::feof(fp) && std::fread(up, sizeof(T), chunk_size, fp) == chunk_size; up += chunk_size * sizeof(T));
         sz = (up - (uint8_t *)ptr) / sizeof(T);
@@ -111,28 +171,52 @@ size_t load_copy(const std::string &path, T *ptr, double *cardinality, const siz
     return sz;
 }
 
+/**
+ * Returns a string representation of the FastxSketchingResult object
+ * containing metadata about the sketches and k-mers
+ *
+ * @return String containing:
+ *   - Object memory address
+ *   - Number of sequence names
+ *   - Whether sketched by sequence or by line
+ *   - Number of signatures
+ *   - Number of k-mers
+ *   - K-mer count statistics (if available)
+ */
 std::string FastxSketchingResult::str() const {
+    // Start with object memory address
     std::string msg = "FastxSketchingResult @" + to_string(this) + ';';
+
+    // Add sequence names info
     if(names_.size()) {
         if(names_.size() < 10) {
             for(const auto &n: names_) msg += n + ",";
         }
         msg += to_string(names_.size()) + " names;";
     }
+
+    // Add sketching mode info
     if(auto pfsz(nperfile_.size()); pfsz > 0) {
         msg += "sketchedbysequence, ";
         msg += to_string(pfsz) + " seqs";
     } else {msg += "sketchbyline";}
     msg += ';';
+
+    // Add signature count
     if(signatures_.size()) {
         msg += to_string(signatures_.size()) + " signatures;";
     }
+
+    // Add k-mer count
     if(kmers_.size()) {
         msg += to_string(kmers_.size()) + " kmers;";
     }
+
+    // Add k-mer count statistics if available
     if(auto kcsz = kmercounts_.size()) {
         msg += to_string(kcsz) + " kmercounts;";
         long double s = 0., ss = 0.;
+        // Calculate mean and variance
         for(const auto v: kmercounts_)
             s += v, ss += v * v;
         msg += "mean: ";
@@ -144,56 +228,112 @@ std::string FastxSketchingResult::str() const {
     return msg;
 }
 
+/**
+ * Computes cardinality estimate from an array of registers
+ *
+ * Uses harmonic mean estimator: m/sum(1/x_i) where:
+ * - m is number of registers
+ * - x_i are register values
+ *
+ * @param ptr Pointer to array of register values
+ * @param m Number of registers
+ * @return Cardinality estimate
+ */
 INLINE double compute_cardest(const RegT *ptr, const size_t m) {
     double s = 0.;
+    // Enable OpenMP SIMD vectorization if OpenMP 4.0+ is available
 #if _OPENMP >= 201307L
     #pragma omp simd reduction(+:s)
 #endif
+    // Sum up all register values
     for(size_t i = 0; i < m; ++i) {
         s += ptr[i];
     }
+
+    // Debug output comparing manual sum vs std::accumulate
     DBG_ONLY(std::fprintf(stderr, "Sum manually is %g, compared to accumulate with ld %g. diff: %0.20Lg\n", s, double(std::accumulate(ptr, ptr + m, 0.L)), std::accumulate(ptr, ptr + m, 0.L) - static_cast<long double>(s));)
     return m / s;
 }
 
 
 
-
+/**
+ * Processes FASTX files and generates sketches based on specified options
+ *
+ * This function:
+ * 1. Validates input paths and gets file sizes
+ * 2. Sets up parallel processing with multiple threads
+ * 3. Creates appropriate sketch data structures based on space type:
+ *    - SET space: One-permutation or full set sketches
+ *    - MULTISET space: BagMinHash sketches
+ *    - PSET space: ProbMinHash sketches
+ *    - EDIT_DISTANCE space: OrderMinHash sketches (only for parse-by-seq mode)
+ * 4. Initializes sketching parameters and data structures
+ *
+ * @param ret FastxSketchingResult object to store results
+ * @param opts Dashing2Options controlling sketching behavior
+ * @param paths Vector of input FASTX file paths
+ * @param outpath Output file path for sketches
+ * @return Reference to populated FastxSketchingResult
+ */
 FastxSketchingResult &fastx2sketch(FastxSketchingResult &ret, Dashing2Options &opts, const std::vector<std::string> &paths, std::string outpath) {
+    // Validate input paths
     if(paths.empty()) THROW_EXCEPTION(std::invalid_argument("Can't sketch empty path set"));
+    
+    // Get file sizes for all input paths
     std::vector<std::pair<size_t, uint64_t>> filesizes = get_filesizes(paths);
+    
+    // Set up threading parameters
     const size_t nt = std::max(opts.nthreads(), 1u);
     const size_t ss = opts.sketchsize();
+    
+    // Initialize kseq readers for parallel processing
     KSeqHolder kseqs(nt);
-    std::vector<BagMinHash> bmhs;
-    std::vector<ProbMinHash> pmhs;
-    std::vector<OPSetSketch> opss;
-    std::vector<FullSetSketch> fss;
-    std::vector<OrderMinHash> omhs;
-    std::vector<Counter> ctrs;
-    std::vector<VSetSketch> cfss;
+    
+    // Declare containers for different sketch types
+    std::vector<BagMinHash> bmhs;      // For multiset space
+    std::vector<ProbMinHash> pmhs;     // For probability set space  
+    std::vector<OPSetSketch> opss;     // For one-permutation set sketches
+    std::vector<FullSetSketch> fss;    // For full set sketches
+    std::vector<OrderMinHash> omhs;    // For edit distance space
+    std::vector<Counter> ctrs;         // For counting
+    std::vector<VSetSketch> cfss;      // For compressed full set sketches
+
+    // Verify size requirements for data structures
     static_assert(sizeof(pmhs[0].res_[0]) == sizeof(uint64_t), "Must be 64-bit");
     static_assert(sizeof(bmhs[0].track_ids_[0]) == sizeof(uint64_t), "Must be 64-bit");
     static_assert(sizeof(opss[0].ids()[0]) == sizeof(uint64_t), "Must be 64-bit");
     static_assert(sizeof(fss[0].ids()[0]) == sizeof(uint64_t), "Must be 64-bit");
+
+    // Helper lambda to initialize vectors for parallel processing
     auto make = [&](auto &x) {
         x.reserve(nt);
         for(size_t i = 0; i < nt; ++i)
             x.emplace_back(ss);
     };
+
+    // Helper lambda for sketches that save k-mers/counts
     auto make_save = [&](auto &x) {
         x.reserve(nt);
         for(size_t i = 0; i < nt; ++i)
             x.emplace_back(ss, opts.save_kmers_, opts.save_kmercounts_);
     };
+
+    // Initialize appropriate sketch type based on space
     if(opts.sspace_ == SPACE_SET) {
         if(opts.kmer_result_ == ONE_PERM) {
             make(opss);
             for(auto &x: opss) x.set_mincount(opts.count_threshold_);
         } else if(opts.kmer_result_ == FULL_SETSKETCH) {
             if(opts.sketch_compressed_set) {
+                // Initialize compressed sketches based on fd_level
                 cfss.reserve(nt);
                 for(size_t i = 0; i < nt; ++i) {
+                    // Select compression level based on fd_level:
+                    // 0.5 = 4-bit nibbles
+                    // 1.0 = 8-bit bytes  
+                    // 2.0 = 16-bit shorts
+                    // 4.0 = 32-bit uints
                     if(opts.fd_level_ == .5) {
                         cfss.emplace_back(NibbleSetS(opts.count_threshold_, ss, opts.compressed_b_, opts.compressed_a_));
                     } else if(opts.fd_level_ == 1.) {
@@ -205,15 +345,22 @@ FastxSketchingResult &fastx2sketch(FastxSketchingResult &ret, Dashing2Options &o
                     }
                 }
             } else {
+                // Use uncompressed full set sketches
                 fss.reserve(nt);
                 for(size_t i = 0; i < nt; ++i)
                     fss.emplace_back(opts.count_threshold_, ss, opts.save_kmers_, opts.save_kmercounts_);
             }
         }
-    } else if(opts.sspace_ == SPACE_MULTISET) make_save(bmhs);
-    else if(opts.sspace_ == SPACE_PSET) make(pmhs);
-    else if(opts.sspace_ == SPACE_EDIT_DISTANCE) {
+    } else if(opts.sspace_ == SPACE_MULTISET) {
+        // Initialize bag min hash sketches for multiset space
+        make_save(bmhs);
+    } else if(opts.sspace_ == SPACE_PSET) {
+        // Initialize probabilistic min hash sketches for probability set space
+        make(pmhs);
+    } else if(opts.sspace_ == SPACE_EDIT_DISTANCE) {
         if(opts.parse_by_seq_) {
+            // Initialize order min hash sketches for edit distance space
+            // Only available in parse-by-seq mode
             omhs.reserve(nt);
             for(size_t i = 0; i < nt; omhs.emplace_back(ss, opts.k_), ++i);
         } else {
@@ -221,6 +368,7 @@ FastxSketchingResult &fastx2sketch(FastxSketchingResult &ret, Dashing2Options &o
         }
     }
     while(ctrs.size() < nt) ctrs.emplace_back(opts.cssize());
+// Macro to reset sketch data structures for a given thread ID
 #define __RESET(tid) do { \
         if(!opss.empty()) opss[tid].reset();\
         else if(!fss.empty()) fss[tid].reset();\
@@ -231,48 +379,78 @@ FastxSketchingResult &fastx2sketch(FastxSketchingResult &ret, Dashing2Options &o
         if(ctrs.size() > unsigned(tid)) ctrs[tid].reset();\
     } while(0)
 
+    // Number of input paths to process
     const uint64_t nitems = paths.size();
+
+    // Setup output paths for kmers if needed
     std::string kmeroutpath, kmernamesoutpath;
     if(outpath.size() && outpath != "-" && outpath != "/dev/stdout") {
+        // Calculate offset for mmap'd signatures file
         const size_t offset = sizeof(nitems) * 2 + sizeof(double) * nitems;
         ::truncate(outpath.data(), offset);
         ret.signatures_.assign(outpath, offset);
+        
+        // Setup kmer output paths if saving kmers
         if(opts.save_kmers_) {
             kmeroutpath = outpath + ".kmer64";
             kmernamesoutpath = kmeroutpath + ".names.txt";
         }
     }
+
+    // Write kmer metadata and input paths if saving kmers
     if(kmeroutpath.size()) {
         std::FILE *fp = bfopen(kmeroutpath.data(), "w");
+        
+        // Pack data type with canonicalization flag
         uint32_t dtype = (uint32_t)opts.input_mode() | (int(opts.canonicalize()) << 8);
         uint32_t sketchsize = opts.sketchsize_;
         uint32_t k = opts.k_;
         uint32_t w = opts.w_ < 0 ? opts.k_: opts.w_;
+
+        // Write sketch parameters
         checked_fwrite(fp, &dtype, sizeof(dtype));
         checked_fwrite(fp, &sketchsize, sizeof(sketchsize));
         checked_fwrite(fp, &k, sizeof(k));
         checked_fwrite(fp, &w, sizeof(w));
         checked_fwrite(fp, &opts.seedseed_, sizeof(opts.seedseed_));
+
+        // Open names file and verify kmer file size
         if((fp = bfreopen(kmernamesoutpath.data(), "wb", fp)) == 0) THROW_EXCEPTION(std::runtime_error("Failed to open "s + kmernamesoutpath + " for writing."));
         if(bns::filesize(kmeroutpath.data()) != 24) THROW_EXCEPTION(std::runtime_error("kmer out path is the wrong size (expected 16, got "s + std::to_string(bns::filesize(kmeroutpath.data()))));
         static_assert(sizeof(uint32_t) * 4 + sizeof(uint64_t) == 24, "Sanity check");
+        
+        // Setup memory mapping for kmers
         ret.kmers_.assign(kmeroutpath, 24);
+
+        // Write input paths to names file
         for(const auto &n: paths) {
             checked_fwrite(n.data(), 1, n.size(), fp);
             std::fputc('\n', fp);
         }
         std::fclose(fp);
     }
+    // Get shift amount for signature size calculations
     const int sigshift = opts.sigshift();
+    
+    // Calculate size needed for signature vector (nitems * sketchsize shifted)
     const size_t sigvecsize64 = nitems * ss >> sigshift;
+    
+    // Resize signatures vector to hold all sketches
     ret.signatures_.resize(sigvecsize64);
+
+    // Debug logging for memory-mapped file details
     if(verbosity >= DEBUG && outpath.size()) {
         const size_t offset = sizeof(nitems) * 2 + sizeof(double) * nitems;
-        std::fprintf(stderr, "Assigning vector of size %zu to mmap'd file of size %zu with offset %zu\n", ret.signatures_.size(), offset + ret.signatures_.size() * sizeof(RegT), offset);
+        std::fprintf(stderr, "Assigning vector of size %zu to mmap'd file of size %zu with offset %zu\n", 
+            ret.signatures_.size(), offset + ret.signatures_.size() * sizeof(RegT), offset);
     }
+
+    // Edit distance sketching only supported in parse-by-sequence mode
     if(opts.sspace_ == SPACE_EDIT_DISTANCE) {
         THROW_EXCEPTION(std::runtime_error("edit distance is only available in parse by seq mode"));
     }
+
+    // Resize vectors to store output file paths
     ret.destination_files_.resize(nitems);
     if(opts.save_kmers_) {
         ret.kmerfiles_.resize(nitems);
@@ -280,7 +458,11 @@ FastxSketchingResult &fastx2sketch(FastxSketchingResult &ret, Dashing2Options &o
     if(opts.save_kmercounts_ || opts.kmer_result_ == FULL_MMER_COUNTDICT) {
         ret.kmercountfiles_.resize(nitems);
     }
+
+    // Initialize cardinality estimates for each sketch
     ret.cardinalities_.resize(nitems, -1.);
+
+    // Debug logging for input files and sketch configuration
 #ifndef NDEBUG
     for(size_t i = 0; i < ret.names_.size(); ++i) {
         std::fprintf(stderr, "name %zu is %s\n", i, ret.names_[i].data());
@@ -330,28 +512,45 @@ FastxSketchingResult &fastx2sketch(FastxSketchingResult &ret, Dashing2Options &o
            ((!opts.save_kmercounts_ && opts.kmer_result_ != FULL_MMER_COUNTDICT) || dkcif)
         )
         {
+            // Handle sketches that are not full mmer sets
             if(opts.kmer_result_ < FULL_MMER_SET) {
+                // Process signatures if they exist
                 if(ret.signatures_.size()) {
+                    // Handle compressed set sketches
                     if(opts.sketch_compressed_set) {
+                        // Open file and read cardinality
                         std::FILE *ifp = std::fopen(destination.data(), "rb");
                         std::fread(&ret.cardinalities_[myind], sizeof(double), 1, ifp);
+
+                        // Read sketch parameters
                         std::array<long double, 4> arr;
                         std::fread(arr.data(), sizeof(long double), arr.size(), ifp);
                         auto &[a, b, fd_level, sketchsize] = arr;
+
+                        // Validate parameters match expectations
                         if(fd_level != opts.fd_level_) {
                             THROW_EXCEPTION(std::runtime_error("fd level mismatch."));
                         }
                         if(sketchsize != ss) {
                             THROW_EXCEPTION(std::runtime_error("sketch size mismatch."));
                         }
+
+                        // Read compressed signatures
                         RegT *const ptr = &ret.signatures_[(ss >> sigshift) * myind];
                         if(std::fread(ptr, sizeof(RegT), ss >> sigshift, ifp) != (ss >> sigshift)) THROW_EXCEPTION(std::runtime_error("Failed to read compressed signatures from file "s + destination));
+
+                        // Verify we've reached end of file
                         if(std::fgetc(ifp) != EOF) {
                             THROW_EXCEPTION(std::runtime_error("File corrupted - ifp should be at eof."));
                         }
                         std::fclose(ifp);
-                    } else {
+                    }
+                    // Handle uncompressed sketches
+                    else {
+                        // Verify signature array bounds
                         assert(mss + ss <= ret.signatures_.size() || !std::fprintf(stderr, "mss %zu, ss %zu, sig size %zu\n", mss, ss, ret.signatures_.size()));
+
+                        // Try to load existing sketch, resketch if not available
                         if(load_copy(destination, &ret.signatures_[mss], &ret.cardinalities_[myind], ss) == 0) {
                             std::fprintf(stderr, "Sketch was not available in file %s... resketching.\n", destination.data());
                             goto perform_sketch;

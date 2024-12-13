@@ -3,14 +3,18 @@
 #ifndef VEC_DISABLED__
 #define VEC_DISABLED__ 1
 #endif
+
+// Standard library includes
 #include <stdexcept>
 #include <cassert>
 #include <queue>
 #include <unordered_map>
 #include <memory>
 
+// Local includes
 #include "enums.h"
 
+// External library includes
 #include "aesctr/wy.h"
 #include "sketch/fy.h"
 #include "sketch/div.h"
@@ -26,10 +30,31 @@ namespace sketch {
 namespace setsketch {
 
 namespace detail {
+    /**
+     * Custom deleter functor for freeing memory allocated by the sketch
+     * Uses std::free to deallocate memory while handling const pointers
+     */
     struct Deleter {
         template<typename T>
         void operator()(const T *x) const {std::free(const_cast<T *>(x));}
     };
+
+/**
+ * Implementation of Brent's method for finding function minima
+ * Uses golden section search and parabolic interpolation to find local minimum
+ *
+ * @tparam F Function type to minimize
+ * @tparam T Value type for calculations
+ * @param f Function to minimize
+ * @param min Lower bound of search interval
+ * @param max Upper bound of search interval  
+ * @param bits Precision in bits for convergence test
+ * @param max_iter Maximum number of iterations
+ * @return Tuple containing:
+ *         - x value at minimum
+ *         - Function value at minimum
+ *         - Number of iterations used
+ */
 template <class F, class T>
 std::tuple<T, T, uint64_t> brent_find_minima(const F &f, T min, T max, int bits=std::numeric_limits<T>::digits, uint64_t max_iter=std::numeric_limits<uint64_t>::max()) noexcept
 {
@@ -41,9 +66,15 @@ std::tuple<T, T, uint64_t> brent_find_minima(const F &f, T min, T max, int bits=
    delta2 = delta = 0;
    uint64_t count = max_iter;
    do {
+      // Calculate midpoint and convergence bounds
       mid = (min + max) / 2;
-      fract1 = tolerance * std::abs(x) + tolerance / 4; fract2 = 2 * fract1;
+      fract1 = tolerance * std::abs(x) + tolerance / 4; 
+      fract2 = 2 * fract1;
+
+      // Check if converged based on interval size
       if(std::abs(x - mid) <= (fract2 - (max - min) / 2)) break;
+
+      // Try parabolic interpolation if we have enough points
       if(std::abs(delta2) > fract1) {
          T r = (x - w) * (fx - fv);
          T q = (x - v) * (fx - fw);
@@ -53,24 +84,35 @@ std::tuple<T, T, uint64_t> brent_find_minima(const F &f, T min, T max, int bits=
          else      q = -q;
          T td = delta2;
          delta2 = delta;
+
+         // Check if parabolic step is acceptable
          if((std::abs(p) >= std::abs(q * td / 2)) || (p <= q * (min - x)) || (p >= q * (max - x)))
          {
+            // Fall back to golden section if parabolic step fails
             delta2 = (x >= mid) ? min - x : max - x;
             delta = golden * delta2;
          } else {
-            delta = p / q; u = x + delta;
+            // Take parabolic step
+            delta = p / q; 
+            u = x + delta;
             if(((u - min) < fract2) || ((max- u) < fract2))
                delta = (mid - x) < 0 ? (T)-std::abs(fract1) : (T)std::abs(fract1);
          }
       } else {
+         // Use golden section step
          delta2 = (x >= mid) ? min - x : max - x;
          delta = golden * delta2;
       }
+
+      // Calculate new point to evaluate
       u = (std::abs(delta) >= fract1) ? T(x + delta) : (delta > 0 ? T(x + std::abs(fract1)) : T(x - std::abs(fract1)));
       fu = f(u);
+
+      // Update points based on function evaluation
       if(fu <= fx) {
          if(u >= x) min = x; else max = x;
-         v = w;w = x; x = u; fv = fw; fw = fx; fx = fu;
+         v = w; w = x; x = u;
+         fv = fw; fw = fx; fx = fu;
       } else {
          // Oh dear, point u is worse than what we have already,
          // even so it *must* be better than one of our endpoints:
@@ -82,13 +124,30 @@ std::tuple<T, T, uint64_t> brent_find_minima(const F &f, T min, T max, int bits=
             v = u, fv = fu;
       }
    } while(--count);
+
    return std::make_tuple(x, fx, max_iter - count);
 }
 
+// Helper function to find optimal parameters for set sketches
+// Implemented in setsketch.cpp
 std::pair<long double, long double> optimal_parameters(const long double maxreg, const long double minreg, const long double q) noexcept;
 
 }
-
+/**
+ * Joint Maximum Likelihood Estimation for simple case
+ * 
+ * Estimates the Jaccard similarity between two sets using maximum likelihood estimation.
+ * This function implements a simplified version of joint MLE for set similarity estimation
+ * based on the observed counts of unique and shared elements in the sketches.
+ * 
+ * @param lhgt Number of elements unique to left set
+ * @param rhgt Number of elements unique to right set
+ * @param m Total size of sketch
+ * @param lhest Estimated cardinality of left set
+ * @param rhest Estimated cardinality of right set
+ * @param base Base parameter for exponential spacing between registers
+ * @return Estimated Jaccard similarity between the two sets
+ */
 template<typename FT>
 static inline FT jmle_simple(const uint64_t lhgt, const uint64_t rhgt, const size_t m, const FT lhest, const FT rhest, FT base) {
     if(!lhest && !rhest) return FT(0.);
@@ -97,6 +156,7 @@ static inline FT jmle_simple(const uint64_t lhgt, const uint64_t rhgt, const siz
     const long double bi = 1.L / base;
     const long double lbase = std::log(static_cast<long double>(base)), lbi = 1. / lbase;
     const FT z = (1.L - bi) / (sumest);
+    // Function to maximize likelihood of observed data given Jaccard similarity
     auto func = [neq,lhgt,rhgt,lbi,z,rhest,lhest](auto jaccard) {
         FT lhs = neq || lhgt ? FT(lbi * std::log1p((rhest * jaccard - lhest) * z)): FT(0);
         FT rhs = neq || rhgt ? FT(lbi * std::log1p((lhest * jaccard - rhest) * z)): FT(0);
@@ -111,29 +171,51 @@ static inline FT jmle_simple(const uint64_t lhgt, const uint64_t rhgt, const siz
 }
 
 
+    // Constant for converting 64-bit integers to doubles
+    // Uses C++17 hexadecimal floating point literal if available
     static constexpr double INVMUL64 =
 #if __cplusplus >= 201703L
     0x1p-64;
 #else
     5.42101086242752217e-20;
 #endif
-
+/**
+ * Minimum value tracker with tree structure
+ * 
+ * Maintains a binary tree to efficiently track minimum values in a set sketch.
+ * The tree structure allows O(log n) updates while maintaining the minimum values.
+ * Used as a core component in set similarity estimation.
+ * 
+ * Template parameter FT is the floating point type used for values
+ */
 // Implementations of set sketch
-
 template<typename FT>
 class mvt_t {
-    FT mv_;
-    FT *data_ = nullptr;
-    size_t m_;
+    FT mv_;                // Maximum value allowed
+    FT *data_ = nullptr;   // Array storing the tree nodes
+    size_t m_;            // Number of leaf nodes
 public:
+    /**
+     * Constructor initializes tracker with size m and optional maximum value
+     * @param m Number of leaf nodes in the tree
+     * @param mv Maximum value allowed, defaults to FT max
+     */
     mvt_t(size_t m, FT mv = std::numeric_limits<FT>::max()): mv_(mv), m_(m) {}
 
+    // Accessor methods
     FT mv() const {return mv_;}
     FT *data() {return data_;}
     const FT *data() const {return data_;}
     size_t getm() const {return m_;}
-    size_t nelem() const {return 2 * m_ - 1;}
+    size_t nelem() const {return 2 * m_ - 1;}  // Total number of nodes in tree
     FT operator[](size_t i) const {return data_[i];}
+
+    /**
+     * Assigns new data array and initializes values
+     * @param vals Pointer to array to use for storage
+     * @param nvals Number of values in array
+     * @param mv New maximum value
+     */
     void assign(FT *vals, size_t nvals, FT mv) {
         mv_ = mv;
         assign(vals, nvals);
@@ -142,6 +224,11 @@ public:
         data_ = vals; m_ = nvals;
         std::fill(data_, data_ + nelem(), mv_);
     }
+
+    /**
+     * Returns maximum value in the tree
+     * Used to determine sketch threshold
+     */
     FT max() const {
         return data_[nelem() - 1];
     }
@@ -149,6 +236,8 @@ public:
         return max();
     }
 
+    // Updates value at given index and propagates changes up the tree
+    // Returns true if update was successful (new value was smaller)
     bool update(size_t index, FT x) {
         const auto sz = nelem();
         if(x < data_[index]) {
@@ -166,6 +255,11 @@ public:
     }
 };
 
+/**
+ * Minimum value tracker with tree structure for integer types
+ * Maintains a binary tree to efficiently track minimum values
+ * @tparam ResT Integer type for storing values
+ */
 template<typename ResT>
 struct minvt_t {
     static constexpr ResT minv_ = 0;
@@ -179,6 +273,13 @@ struct minvt_t {
     const ResT *data() const {return data_;}
     size_t getm() const {return m_;}
     ResT operator[](size_t i) const {return data_[i];}
+    
+    /**
+     * Assigns new data array and initializes values
+     * @param vals Pointer to array to use for storage
+     * @param nvals Number of values in array
+     * @param b Base value for exponential calculations
+     */
     void assign(ResT *vals, size_t nvals, double b) {
         data_ = vals; m_ = nvals; b_ = b;
         std::fill(data_, data_ + (m_ << 1) - 1, minv_);
@@ -192,6 +293,12 @@ struct minvt_t {
     }
     typename std::ptrdiff_t max() const {return *std::max_element(data_, &data_[(m_ << 1) - 1]);}
 
+    /**
+     * Updates value at given index and propagates changes up the tree
+     * @param index Index to update
+     * @param x New value
+     * @return true if update was successful (new value was larger)
+     */
     bool update(size_t index, ResT x) {
         const auto sz = (m_ << 1) - 1;
         if(x > data_[index]) {
@@ -210,6 +317,10 @@ struct minvt_t {
     }
 };
 
+/**
+ * Helper class for tracking low k values in a sketch
+ * @tparam ResT Integer type for storing values
+ */
 template<typename ResT>
 struct LowKHelper {
     ResT *vals_;
@@ -218,6 +329,13 @@ struct LowKHelper {
     double explim_;
     int klow_ = 0;
     LowKHelper(size_t m): nvals_(m) {}
+    
+    /**
+     * Assigns new data array and initializes values
+     * @param vals Pointer to array to use for storage
+     * @param nvals Number of values in array
+     * @param b Base value for exponential calculations
+     */
     void assign(ResT *vals, size_t nvals, double b) {
         vals_ = vals; nvals_ = nvals;
         b_ = b;
@@ -226,12 +344,23 @@ struct LowKHelper {
     int klow() const {return klow_;}
     auto max() const {return *std::max_element(vals_, vals_ + nvals_);}
     double explim() const {return explim_;}
+    
+    /**
+     * Resets internal state and recalculates minimum values
+     */
     void reset() {
         klow_ =  *std::min_element(vals_, vals_ + nvals_);
         size_t i;
         for(i = natval_ = 0; i < nvals_; ++i) natval_ += (vals_[i] == klow_);
         explim_ = std::pow(b_, -klow_);
     }
+    
+    /**
+     * Updates value at given index
+     * @param idx Index to update
+     * @param k New value
+     * @return true if update was successful (new value was larger)
+     */
     bool update(size_t idx, ResT k) {
         if(k > vals_[idx]) {
             auto oldv = vals_[idx];
@@ -241,6 +370,11 @@ struct LowKHelper {
         }
         return false;
     }
+    
+    /**
+     * Removes a value from tracking
+     * @param kval Value to remove
+     */
     void remove(int kval) {
         if(kval == klow_) {
             if(--natval_ == 0) reset();
@@ -248,7 +382,15 @@ struct LowKHelper {
     }
 };
 
+/**
+ * AVX2 optimized reduction operations for summing vector registers
+ */
 #if __AVX2__
+/**
+ * Performs horizontal sum reduction on 256-bit vector of floats
+ * @param x Vector of 8 floats to sum
+ * @return Sum of all elements
+ */
 INLINE float broadcast_reduce_sum(__m256 x) {
     const __m256 permHalves = _mm256_permute2f128_ps(x, x, 1);
     const __m256 m0 = _mm256_add_ps(permHalves, x);
@@ -258,12 +400,24 @@ INLINE float broadcast_reduce_sum(__m256 x) {
     const __m256 m2 = _mm256_add_ps(perm1, m1);
     return m2[0];
 }
+
+/**
+ * Performs horizontal sum reduction on 256-bit vector of doubles
+ * @param x Vector of 4 doubles to sum
+ * @return Sum of all elements
+ */
 INLINE double broadcast_reduce_sum(__m256d x) {
     __m256d m1 = _mm256_add_pd(x, _mm256_permute2f128_pd(x, x, 1));
     return _mm256_add_pd(m1, _mm256_permute_pd(m1, 5))[0];
 }
 #endif
 
+/**
+ * Helper function for set operations that calculates geometric series sum
+ * @param b Base value for geometric series
+ * @param arg Exponent value
+ * @return Sum of geometric series (1-b^(-arg))/(1-1/b)
+ */
 static inline long double g_b(long double b, long double arg) {
     return (1.L - std::pow(b, -arg)) / (1.L - 1.L / b);
 }
@@ -271,7 +425,12 @@ static inline long double g_b(long double b, long double arg) {
 
 template<typename ResT, typename FT=double> class SetSketch; // Forward
 
-
+/**
+ * Main CSetSketch class for continuous set sketches
+ * Implements a continuous version of the set sketch algorithm
+ * 
+ * Template parameter FT is the floating point type used for values (default: double)
+ */
 template<typename FT=double>
 class CSetSketch {
     // This uses Kahan summation for floating-point values by default
@@ -279,14 +438,21 @@ class CSetSketch {
     static_assert(std::is_floating_point<FT>::value, "Must float");
     // SetSketch 1
 protected:
-    size_t m_; // Number of registers
-    std::unique_ptr<FT[], detail::Deleter> data_;
-    fy::LazyShuffler ls_;
-    mvt_t<FT> mvt_;
-    std::vector<uint64_t> ids_;
-    std::vector<uint32_t> idcounts_;
-    uint64_t total_updates_ = 0;
-    mutable double mycard_ = -1.;
+    size_t m_;                                          // Number of registers
+    std::unique_ptr<FT[], detail::Deleter> data_;      // Array storing sketch data
+    fy::LazyShuffler ls_;                              // Lazy shuffling for random sampling
+    mvt_t<FT> mvt_;                                    // Minimum value tracker
+    std::vector<uint64_t> ids_;                        // Optional storage for element IDs
+    std::vector<uint32_t> idcounts_;                   // Optional storage for element counts
+    uint64_t total_updates_ = 0;                       // Total number of updates performed
+    mutable double mycard_ = -1.;                      // Cached cardinality estimate
+
+    /**
+     * Allocates aligned memory for sketch data array
+     * @param n Number of registers to allocate
+     * @return Pointer to allocated memory
+     * @throws std::bad_alloc if allocation fails
+     */
     static FT *allocate(size_t n) {
         n = (n << 1) - 1;
         FT *ret = nullptr;
@@ -301,12 +467,29 @@ protected:
         if(posix_memalign((void **)&ret, ALN, n * sizeof(FT))) throw std::bad_alloc();
         return ret;
     }
+
+    /**
+     * Gets beta value for given index
+     * Beta values are used in cardinality estimation
+     * @param idx Index to get beta for
+     * @return Beta value for index
+     */
     FT getbeta(size_t idx) const {
         return FT(1.) / static_cast<FT>(m_ - idx);
     }
+
 public:
+    // Accessors for internal data
     const FT *data() const {return data_.get();}
     FT *data() {return data_.get();}
+
+    /**
+     * Constructor initializes sketch with given parameters
+     * @param m Number of registers
+     * @param track_ids Whether to track element IDs
+     * @param track_counts Whether to track element counts
+     * @param maxv Maximum allowed value
+     */
     CSetSketch(size_t m, bool track_ids=false, bool track_counts=false, FT maxv=std::numeric_limits<FT>::max()): m_(m), ls_(m_), mvt_(m_) {
         if(m > 0xFFFFFFFFull) {
             throw std::invalid_argument("CSetSketch's maximum sketch size is 2^32/0xFFFFFFFFu/4294967295.");
@@ -317,11 +500,24 @@ public:
         if(track_counts)         idcounts_.resize(m_);
         //generate_betas();
     }
+
+    /**
+     * Copy constructor creates deep copy of another sketch
+     * @param o Sketch to copy from
+     */
     CSetSketch(const CSetSketch &o): m_(o.m_), data_(allocate(o.m_)), ls_(m_), mvt_(m_, o.mvt_.mv()), ids_(o.ids_), idcounts_(o.idcounts_) {
         mvt_.assign(data_.get(), m_, o.mvt_.mv());
         std::copy(o.data_.get(), &o.data_[2 * m_ - 1], data_.get());
         //generate_betas();
     }
+
+    /**
+     * Converts continuous sketch to discrete SetSketch
+     * @param b Base for exponential histogram
+     * @param a Scale factor
+     * @param q Maximum register value
+     * @return Converted SetSketch
+     */
     template<typename ResT=uint16_t>
     SetSketch<ResT, FT> to_setsketch(double b, double a, int64_t q=std::numeric_limits<ResT>::max() - 1) const {
         SetSketch<ResT, FT> ret(m_, b, a, q, ids_.size());
@@ -331,6 +527,12 @@ public:
         }
         return ret;
     }
+
+    /**
+     * Assignment operator performs deep copy
+     * @param o Sketch to copy from
+     * @return Reference to this sketch
+     */
     CSetSketch &operator=(const CSetSketch &o) {
         if(size() != o.size()) {
             if(m_ < o.m_) data_.reset(allocate(o.m_));
@@ -347,88 +549,184 @@ public:
         total_updates_ = o.total_updates_;
         return *this;
     }
+    /**
+     * Constructors for loading sketch from various sources
+     * @param fp File pointer to read from
+     */
     CSetSketch(std::FILE *fp): ls_(1), mvt_(1) {read(fp);}
     CSetSketch(gzFile fp): ls_(1), mvt_(1) {read(fp);}
     CSetSketch(const std::string &s): ls_(1), mvt_(1) {
         read(s);
     }
+
+    /**
+     * Creates empty sketch with same parameters
+     * @return New empty sketch
+     */
     CSetSketch<FT> clone_like() const {
         return CSetSketch(m_, !ids().empty(), !idcounts().empty());
     }
+
+    /**
+     * Get minimum value in sketch
+     * @return Minimum value across all registers
+     */
     FT min() const {return *std::min_element(data(), data() + m_);}
+
+    /**
+     * Get maximum value in sketch
+     * @return Maximum value across all registers
+     */
     FT max() const {return mvt_.max();}
+
+    /**
+     * Get size of sketch (number of registers)
+     * @return Number of registers
+     */
     size_t size() const {return m_;}
+
+    /**
+     * Access register value by index
+     * @param i Index of register
+     * @return Reference to register value
+     */
     FT &operator[](size_t i) {return data_[i];}
     const FT &operator[](size_t i) const {return data_[i];}
+
+    /**
+     * Alias methods for updating sketch with an element
+     * @param id Element ID to add
+     */
     void addh(uint64_t id) {update(id);}
     void add(uint64_t id) {update(id);}
+
+    /**
+     * Get total number of updates made to sketch
+     * @return Total update count
+     */
     size_t total_updates() const {return total_updates_;}
+
+    /**
+     * Update sketch with element, ignoring weight
+     * @param id Element ID to add
+     * @param weight Weight value (ignored)
+     */
     template<typename OFT, typename=typename std::enable_if<std::is_arithmetic<OFT>::value>::type>
+    /**
+     * Update method that ignores weight parameter
+     * @param id Element ID to add
+     * @param weight Weight value (ignored) 
+     */
     void update(const uint64_t id, OFT) {update(id);}
-    // If a weight is passed, ignore it
+
+    /**
+     * Main update method for adding element to sketch
+     * Implements continuous set sketch update algorithm
+     * 
+     * The algorithm works by:
+     * 1. Generating random values based on element ID
+     * 2. Computing exponential values for sketch registers
+     * 3. Updating minimum values in tree structure
+     * 4. Tracking element IDs and counts if enabled
+     * 5. Breaking early if values exceed maximum threshold
+     *
+     * @param id Element ID to add to the sketch
+     */
     void update(const uint64_t id) {
         using fastlog::flog;
         FT kahan_carry = 0;
         mycard_ = -1.;
         ++total_updates_;
         uint64_t hid = id;
+        // Hash the ID with a constant for better distribution
         uint64_t rv = sketch::hash::CEHasher()(id ^ uint64_t(0xb2069fc679a8da0buLL));
 
         FT ev;
         FT mv = max();
+        // Handle large floating point types (>8 bytes) differently
         CONST_IF(sizeof(FT) > 8) {
             auto lrv = __uint128_t(rv) << 64;
             const FT bv = -1. / m_;
             lrv |= wy::wyhash64_stateless(&rv);
+            // Convert to exponential value
             FT tv = static_cast<long double>((lrv >> 32) * 1.2621774483536188887e-29L);
             ev = bv * std::log(tv);
             if(ev > mv) return;
         } else {
+            // For standard floating point types
             auto tv = rv * INVMUL64;
             const FT bv = -1. / m_;
+            // Quick check if value will exceed maximum
             if(bv * flog(tv) * FT(.7) > mv) return;
             ev = bv * std::log(tv);
             if(ev > mv) return;
         }
+        // Initialize lazy shuffling for random sampling
         ls_.reset();
         ls_.seed(rv);
         uint64_t bi = 1;
         uint32_t idx;
+        // Main update loop
         for(;;) {
             idx = ls_.step();
+            // Try to update minimum value tracker
             if(mvt_.update(idx, ev)) {
+                // Update IDs and counts if tracking enabled
                 if(!ids_.empty()) {
                     ids_.operator[](idx) = id;
                     if(!idcounts_.empty()) idcounts_.operator[](idx) = 1;
                 }
                 mv = max();
             } else if(!idcounts_.empty()) {
+                // Increment count if same ID already exists
                 if(id == ids_.operator[](idx))
                     ++idcounts_.operator[](idx);
             }
             if(bi == m_) return;
+            // Generate next random value
             rv = wy::wyhash64_stateless(&hid);
             const FT bv = -getbeta(bi++);
+            // Handle large floating point types
             CONST_IF(sizeof(FT) > 8) {
                 auto lrv = __uint128_t(rv) << 64;
                 lrv |= wy::wyhash64_stateless(&rv);
                 const FT increment = bv * std::log((lrv >> 32) * 1.2621774483536188887e-29L);
                 if(kahan::update(ev, kahan_carry, increment) > mv) break;
             } else {
+                // Handle standard floating point types
                 const FT nv = rv * INVMUL64;
                 if(bv * flog(nv) * FT(.7) + ev > mv || kahan::update(ev, kahan_carry, bv * std::log(nv)) > mv)
                     break;
             }
         }
     }
+    /**
+     * Checks if two CSetSketch instances are equal
+     * @param o Other CSetSketch to compare with
+     * @return true if sketches have identical parameters and data
+     */
     bool operator==(const CSetSketch<FT> &o) const {
         return same_params(o) && std::equal(data(), data() + m_, o.data());
     }
+
+    /**
+     * Checks if two CSetSketch instances have the same parameters
+     * @param o Other CSetSketch to compare with
+     * @return true if sketches have identical parameters (size, tracking settings)
+     */
     bool same_params(const CSetSketch<FT> &o) const {
         return m_ == o.m_
             && (ids().empty() == o.ids().empty())
             && (idcounts().empty() == o.idcounts().empty());
     }
+
+    /**
+     * Merges another CSetSketch into this one
+     * Updates data array with minimum values between the two sketches
+     * If ID tracking enabled, updates IDs and counts accordingly
+     * @param o Other CSetSketch to merge from
+     * @throws std::runtime_error if sketches have different parameters
+     */
     void merge(const CSetSketch<FT> &o) {
         if(!same_params(o)) throw std::runtime_error("Can't merge sets with differing parameters");
         if(ids().empty()) {
@@ -446,15 +744,40 @@ public:
         total_updates_ += o.total_updates_;
         mycard_ = -1.;
     }
+
+    /**
+     * Merges another CSetSketch into this one (operator form)
+     * @param o Other CSetSketch to merge from
+     * @return Reference to this sketch after merge
+     */
     CSetSketch &operator+=(const CSetSketch<FT> &o) {merge(o); return *this;}
+
+    /**
+     * Creates new CSetSketch as merge of this and another
+     * @param o Other CSetSketch to merge with
+     * @return New CSetSketch containing merged data
+     */
     CSetSketch operator+(const CSetSketch<FT> &o) const {
         CSetSketch ret(*this);
         ret += o;
         return ret;
     }
+
+    /**
+     * Calculates Jaccard similarity index between two sketches
+     * @param o Other CSetSketch to compare with
+     * @return Jaccard index (number of shared registers / total registers)
+     */
     double jaccard_index(const CSetSketch<FT> &o) const {
         return shared_registers(o) / double(m_);
     }
+
+    /**
+     * Counts number of registers with identical values between sketches
+     * Uses optimized equality comparison for different floating point sizes
+     * @param o Other CSetSketch to compare with
+     * @return Number of registers with matching values
+     */
     size_t shared_registers(const CSetSketch<FT> &o) const {
         CONST_IF(sizeof(FT) == 4) {
             return eq::count_eq((uint32_t *)data(), (uint32_t *)o.data(), m_);
@@ -468,12 +791,24 @@ public:
             return nshared + (x == *optr++);
         });
     }
+
+    /**
+     * Writes sketch to gzipped file
+     * @param s Filename to write to
+     * @throws ZlibError if file cannot be opened/written
+     */
     void write(std::string s) const {
         gzFile fp = gzopen(s.data(), "w");
         if(!fp) throw ZlibError(std::string("Failed to open file ") + s + "for writing");
         write(fp);
         gzclose(fp);
     }
+
+    /**
+     * Reads sketch from gzipped file
+     * @param s Filename to read from
+     * @throws ZlibError if file cannot be opened
+     */
     void read(std::string s) {
         gzFile fp = gzopen(s.data(), "r");
         if(!fp) throw ZlibError(std::string("Failed to open file ") + s);
