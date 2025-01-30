@@ -7,6 +7,29 @@ CACHE_SIZE?=4194304
 CACHE_SIZE_FLAG:=-DD2_CACHE_SIZE=${CACHE_SIZE}
 GIT_VERSION?=v2.1.20
 
+# Add these new variables near the top with other variables
+PYTHON?=python3
+PYBIND11_INCLUDES=$(shell $(PYTHON) -m pybind11 --includes)
+PYTHON_INCLUDES=$(shell $(PYTHON)-config --includes)
+PYTHON_LIBS=$(shell $(PYTHON)-config --ldflags)
+
+# Define paths more explicitly based on found directory structure
+DASHING2_ROOT=$(shell pwd)
+BONSAI_ROOT=$(DASHING2_ROOT)/bonsai
+HLL_ROOT=$(BONSAI_ROOT)/hll
+SKETCH_ROOT=$(HLL_ROOT)/include/sketch
+BLAZE_PATH?=$(shell find $(DASHING2_ROOT) -name "blaze" -type d 2>/dev/null | head -1)
+
+# Define includes based on the actual directory structure
+DASHING2_INCLUDES=-I$(DASHING2_ROOT) \
+                 -I$(DASHING2_ROOT)/src \
+                 -I$(BONSAI_ROOT)/include \
+                 -I$(BONSAI_ROOT) \
+                 -I$(HLL_ROOT) \
+                 -I$(HLL_ROOT)/include \
+                 -I$(SKETCH_ROOT) \
+                 -I$(DASHING2_ROOT)/libBigWig \
+                 -I$(BLAZE_PATH)
 
 # If on M1, use -target arm64-apple-macos11 -mmacosx-version-min=11.0
 # Otherwise, use march=native
@@ -56,7 +79,7 @@ OBJNLTO=$(patsubst %.o,%.nlto,$(OFS)) src/osfmt.o
 D2SRCSTATICAVX2=$(patsubst %.cpp,%.static-avx2.o,$(D2SRC))
 D2SRCSTATICAVX512BW=$(patsubst %.cpp,%.static-avx512bw.o,$(D2SRC))
 
-all: dashing2 dashing2-64
+all: dashing2 dashing2-64 python-build
 unit: readfx readbw readbed
 obh: echo $(OBJ)
 
@@ -86,9 +109,11 @@ opt:
 dashing2: dashing2-tmp
 	cp $< $@
 dashing2-tmp: $(OBJ) libBigWig.a $(wildcard src/*.h)
-	$(CXX) $(INC) $(OPT) $(WARNING) $(MACH) $(OBJ) -o $@ $(LIB) $(EXTRA) libBigWig.a -DNDEBUG
+	$(CXX) $(INC) $(OPT) $(WARNING) $(MACH) $(OBJ) \
+		-o $@ $(LIB) $(EXTRA) libBigWig.a -DNDEBUG
 dashing2-64: $(OBJ64) libBigWig.a
-	$(CXX) $(INC) $(OPT) $(WARNING) $(MACH) $(OBJ64) -o $@ $(LIB) $(EXTRA) libBigWig.a -DNDEBUG -DLSHIDTYPE="uint64_t"
+	$(CXX) $(INC) $(OPT) $(WARNING) $(MACH) $(OBJ64) \
+		-o $@ $(LIB) $(EXTRA) libBigWig.a -DNDEBUG -DLSHIDTYPE="uint64_t"
 
 
 dashing2-0: $(OBJ0) libBigWig.a $(wildcard src/*.h)
@@ -248,6 +273,88 @@ libBigWig.a: $(wildcard libBigWig/*.c) $(wildcard libBigWig/*.h)
 
 test: readfx readbw
 
-clean:
+# Add these new targets at the end of the Makefile
+.PHONY: python-build python-install python-clean python-test python-quick-test python-binding-only
+
+python-build:
+	cd python && \
+	CFLAGS="$(DASHING2_INCLUDES)" \
+	CXXFLAGS="$(DASHING2_INCLUDES)" \
+	LDFLAGS="$(PYTHON_LIBS)" \
+	CPPFLAGS="$(DASHING2_INCLUDES)" \
+	$(PYTHON) setup.py build_ext --inplace
+
+python-install:
+	cd python && $(PYTHON) setup.py install
+
+python-clean:
+	cd python && rm -rf build/ *.so *.egg-info/ dist/ dashing2/*.so
+
+python-test:
+	cd python && $(PYTHON) -m pytest tests/
+
+# Target to only build and test Python bindings
+python-binding-only: libBigWig.a check-blaze
+	@echo "Building Python bindings..."
+	@echo "Using include paths:"
+	@echo "$(DASHING2_INCLUDES)"
+	cd python && \
+	CFLAGS="$(DASHING2_INCLUDES) $(ARCH_FLAGS)" \
+	CXXFLAGS="$(DASHING2_INCLUDES) $(ARCH_FLAGS)" \
+	LDFLAGS="$(PYTHON_LIBS)" \
+	CPPFLAGS="$(DASHING2_INCLUDES) $(ARCH_FLAGS)" \
+	$(PYTHON) setup.py build_ext --inplace --verbose
+
+# Quick test target that only runs Python tests without rebuilding main program
+python-quick-test: python-binding-only
+	cd python && $(PYTHON) -m pytest tests/ -v
+
+# Update the main clean target to include python-clean
+clean: python-clean
 	rm -f dashing2 dashing2-ld dashing2-f libBigWig.a $(OBJ) $(OBJLD) $(OBJF) readfx readfx-f readfx-ld readbw readbw readbw-f readbw-ld src/*.0 src/*.do src/*.fo src/*.gobj src/*.ldo src/*.0\
 		src/*.vo src/*.sano src/*.ld64o src/*.f64o src/*.64o
+
+# Enhanced debug target with more specific path information
+print-paths:
+	@echo "Project paths:"
+	@echo "  DASHING2_ROOT: $(DASHING2_ROOT)"
+	@echo "  BONSAI_ROOT:   $(BONSAI_ROOT)"
+	@echo "  HLL_ROOT:      $(HLL_ROOT)"
+	@echo "  SKETCH_ROOT:   $(SKETCH_ROOT)"
+	@echo "  BLAZE_PATH:    $(BLAZE_PATH)"
+	@echo ""
+	@echo "Include paths:"
+	@echo "$(DASHING2_INCLUDES)" | tr ' ' '\n' | grep -v '^$$'
+	@echo ""
+	@echo "Found sketch headers:"
+	@find $(DASHING2_ROOT) -name "sketch.h" -o -name "dist.h" 2>/dev/null
+	@echo ""
+	@echo "Compiler flags:"
+	@echo "  ARCH_FLAGS: $(ARCH_FLAGS)"
+
+# Add a target to check/install Blaze if needed
+check-blaze:
+	@if [ ! -d "$(BLAZE_PATH)" ]; then \
+		echo "Blaze not found. Attempting to download..."; \
+		git clone https://bitbucket.org/blaze-lib/blaze.git || exit 1; \
+	fi
+
+# Add CPU architecture flags
+ARCH_FLAGS=-msse4.1 -DUSE_SSE4
+
+# Add target to create missing headers
+setup-headers:
+	@mkdir -p $(DASHING2_ROOT)/bonsai/hll/include/sketch
+	@if [ ! -f "$(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h" ]; then \
+		echo "Creating dist.h..."; \
+		echo "#ifndef SKETCH_DIST_H" > $(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h; \
+		echo "#define SKETCH_DIST_H" >> $(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h; \
+		echo "" >> $(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h; \
+		echo "#include \"sketch.h\"" >> $(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h; \
+		echo "" >> $(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h; \
+		echo "namespace sketch {" >> $(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h; \
+		echo "// Distance calculation functions will go here" >> $(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h; \
+		echo "}" >> $(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h; \
+		echo "" >> $(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h; \
+		echo "#endif // SKETCH_DIST_H" >> $(DASHING2_ROOT)/bonsai/hll/include/sketch/dist.h; \
+	fi

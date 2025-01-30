@@ -1,5 +1,8 @@
-from .core import *
-import numpy as np
+from .core import RMinHash, HLL, sketch_fastx, compute_distances
+
+__version__ = '0.0.1'
+
+__all__ = ['RMinHash', 'HLL', 'sketch_fastx', 'compute_distances']
 
 def sketch_file_and_compute_distances(filepath, sketch_size=1024, kmer_size=31):
     """
