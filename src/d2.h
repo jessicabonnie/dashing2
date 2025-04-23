@@ -108,6 +108,7 @@ struct Dashing2Options {
     bool save_kmers_ = false;
     bool save_kmercounts_ = false;
     bool homopolymer_compress_minimizers_ = false;
+    bool whole_line_sketch_ = false;  // Treat each line as a whole entity to sketch rather than breaking into k-mers
 private:
     bool trim_folder_paths_ = false; // When writing output files, write to cwd instead of the directory the files came from
 public:
@@ -164,7 +165,8 @@ public:
     D2O2(kmer_result) D2O2(use128) D2O2(cache_sketches)
     D2O2(sketchsize) D2O2(cssize) D2O2(parse_by_seq)
     D2O2(count_threshold)
-    D2O2(fasta_dedup);
+    D2O2(fasta_dedup) 
+    D2O2(whole_line_sketch)
 #undef D2O
 #undef D2O2
     void downsample(const double f) {

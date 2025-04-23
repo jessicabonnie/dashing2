@@ -7,6 +7,7 @@
 #define SKETCH_OPTS \
 static option_struct sketch_long_options[] = {\
     SHARED_OPTS\
+    {"whole-line", no_argument, 0, OPTARG_WHOLE_LINE},\
 };
 
 namespace dashing2 {
@@ -56,6 +57,7 @@ int sketch_main(int argc, char **argv) {
     bool hpcompress = false;        // homopolymer compression
     bool refine_exact = false;      // refine distances exactly
     bool fasta_dedup = false;       // deduplicate FASTA entries
+    bool whole_line_sketch = false;  // enable whole line sketch
     
     // Parameters for compressed sketching
     long double compressed_a = -1.L;
@@ -111,6 +113,7 @@ int sketch_main(int argc, char **argv) {
     for(;(c = getopt_long(argc, argv, "m:p:k:w:c:f:S:F:Q:o:L:CNs2BPWh?ZJGHv", sketch_long_options, &option_index)) >= 0;) {
         switch(c) {
             SHARED_FIELDS
+            case OPTARG_WHOLE_LINE: whole_line_sketch = true; break;
             case OPTARG_HELP: case '?': case 'h': sketch_usage(); return 1;
         }
         //std::fprintf(stderr, "After getopt argument %d, of is %s\n",c , to_string(of).data());
@@ -170,7 +173,8 @@ int sketch_main(int argc, char **argv) {
         .count_threshold(count_threshold)
         .homopolymer_compress_minimizers(hpcompress)
         .seedseed(seedseed)
-        .fasta_dedup(fasta_dedup);
+        .fasta_dedup(fasta_dedup)
+        .whole_line_sketch(whole_line_sketch);
     opts.by_chrom_ = by_chrom;
     opts.downsample(downsample_frac);
     opts.compressed_a_ = compressed_a;

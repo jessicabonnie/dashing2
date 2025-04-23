@@ -579,47 +579,69 @@ FastxSketchingResult &fastx2sketch(FastxSketchingResult &ret, Dashing2Options &o
         }
         perform_sketch:
         __RESET(tid);
-        auto perf_for_substrs = [&](const auto &func) __attribute__((__always_inline__)) {
-            for_each_substr([&](const std::string &subpath) {
-                auto lfunc = [&](auto x) __attribute__((__always_inline__)) {
-                    x = maskfn(x);
-                    if((!opts.fs_ || !opts.fs_->in_set(x)) && opts.downsample_pass()) func(x);
-                };
-                auto lfunc2 = [&func](auto x) __attribute__((__always_inline__)) {func(maskfn(x));};
-                const auto seqp = kseqs.kseqs_ + tid;
-#define FUNC_FE(f) \
-do {\
-    if(!opts.fs_ && opts.kmer_downsample_frac_ == 1.) {\
-        f(lfunc2, subpath.data(), seqp);\
-    } else {\
-        f(lfunc, subpath.data(), seqp);\
-    } \
-} while(0)
-                if(opts.use128()) {
-                    if(unsigned(opts.k_) <= opts.nremperres128()) {
-                        if(entmin) {
-                            auto encoder(opts.enc_.to_entmin128());
-                            FUNC_FE(encoder.for_each);
-                        } else {
-                            auto encoder(opts.enc_.to_u128());
-                            FUNC_FE(encoder.for_each);
-                        }
-                    } else {
-                        FUNC_FE(opts.rh128_.for_each_hash);
-                    }
-                } else if(unsigned(opts.k_) <= opts.nremperres64()) {
-                    if(entmin) {
-                        auto encoder(opts.enc_.to_entmin64());
-                        FUNC_FE(encoder.for_each);
-                    } else {
-                        auto encoder(opts.enc_);
-                        FUNC_FE(encoder.for_each);
-                    }
+        auto perf_for_substrs = [&](auto funcptr){
+            if(opts.whole_line_sketch_) {
+                // Process the entire line as a single entity, without breaking into k-mers
+                auto hash = XXH3_64bits(path.data(), path.size());
+                funcptr(hash);
+            } else if(rht == bns::DNA) {
+                // Original k-mer processing logic
+                if(!use128) {
+                    enc_.for_each_substr(path, funcptr);
                 } else {
-                    FUNC_FE(opts.rh_.for_each_hash);
+                    enc_.for_each_substr128(path, funcptr);
                 }
-#undef FUNC_FE
-            }, path);
+            } else if(rht == bns::PROTEIN) {
+                if(!use128) {
+                    enc_.for_each_substr_protein(path, funcptr);
+                } else {
+                    enc_.for_each_substr128_protein(path, funcptr);
+                }
+            } else if(rht == bns::PROTEIN20) {
+                if(!use128) {
+                    enc_.for_each_substr_gfprot(path, funcptr);
+                } else {
+                    enc_.for_each_substr128_gfprot(path, funcptr);
+                }
+            } else if(rht == bns::PROTEIN_3BIT) {
+                if(!use128) {
+                    enc_.for_each_substr_protein3bit(path, funcptr);
+                } else {
+                    enc_.for_each_substr128_protein3bit(path, funcptr);
+                }
+            } else if(rht == bns::PROTEIN_6) {
+                if(!use128) {
+                    enc_.for_each_substr_protein6(path, funcptr);
+                } else {
+                    enc_.for_each_substr128_protein6(path, funcptr);
+                }
+            } else if(rht == bns::PROTEIN_6_FRAME) {
+                if(!use128) {
+                    enc_.for_each_substr_protein6(path, funcptr);
+                } else {
+                    enc_.for_each_substr128_protein6(path, funcptr);
+                }
+            } else if(rht == bns::PROTEIN_14) {
+                if(!use128) {
+                    enc_.for_each_substr_protein14(path, funcptr);
+                } else {
+                    enc_.for_each_substr128_protein14(path, funcptr);
+                }
+            } else if(rht == bns::DNA2) {
+                if(!use128) {
+                    enc_.for_each_substr2b(path, funcptr);
+                } else {
+                    enc_.for_each_substr128_2b(path, funcptr);
+                }
+            } else if(rht == bns::DNAC) {
+                if(!use128) {
+                    enc_.for_each_substr_rev(path, funcptr);
+                } else {
+                    enc_.for_each_substr128_rev(path, funcptr);
+                }
+            } else {
+                THROW_EXCEPTION(std::runtime_error(std::string("Unsupported alphabet: ") + bns::to_string(rht)));
+            }
         };
         if(
             (opts.sspace_ == SPACE_MULTISET || opts.sspace_ == SPACE_PSET || opts.kmer_result_ == FULL_MMER_SET || opts.kmer_result_ == FULL_MMER_COUNTDICT)

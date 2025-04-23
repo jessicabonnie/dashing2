@@ -158,17 +158,44 @@ dashing2 sketch [options] --cmpout <outfile> genome1.fa genome2.fa <...>
 
 Full usage is found via `dashing2 --help` and `dashing2 <subcommand> --help`, where  <subcommand> is one of the dashing2 subcommands.
 
-`dashing2 sketch` performs sketching/summarization of a set of input files, or sequence-by-sequence processing of one or more sequence files.
-It also optionally performs comparisons and emits results to `--cmpout`.
+**Use 7 -- Whole-line Sketching for Text Files**
 
-Adding `--cache` causes Dashing2 to cache sketches to disk adjacent to the input files;
-     this location can be changed with `--outprefix`.
+For text files or specialized formats where you want to treat each line as a complete entity without breaking it into k-mers, use the `--whole-line` option:
 
+```
+dashing2 sketch --whole-line --cmpout <outfile> text1.txt text2.txt <...>
+```
 
-We support a variety of alphabets -- DNA, Protein, and reduced amino acid alphabets for long-range homology (--protein14, --protein8, --protein6).
+This is particularly useful for:
+- Comparing text files line-by-line
+- Processing custom file formats where each line represents a complete record
+- BED files where you want to compare entire lines rather than interval contents
 
-Alternate file-types supported include BigWigs (`--bigwig`), BED (`--bed`), and LeafCutter outputs (`--leafcutter`).
+Example:
+```
+# Create two text files
+$ cat > file1.txt
+line1
+line2
+line3
 
+$ cat > file2.txt
+line1
+line2
+line4
+
+# Compare them with whole-line sketching
+$ dashing2 sketch --whole-line --cmpout similarity.txt file1.txt file2.txt
+
+# View the similarity matrix
+$ cat similarity.txt
+2
+file1.txt
+file2.txt
+0.6667
+```
+
+In this mode, each line is hashed as a complete entity and those hashes are used in the sketch, rather than breaking lines into k-mers.
 
 Clustering: scipy.cluster.hierarchy and fastcluster.hierarchy yield fast, concise clusterings, if distances are emitted.
 
@@ -249,8 +276,53 @@ Use this to generate K-Nearest Neighbor graphs for edit distance.
 dashing2 sketch -p8 --cmpout knn.edit-distance.tbl -k7 --parse-by-seq --edit-distance --compute-edit-distance input.fasta
 ```
 
+**Use 7: Whole-line Sketching for Text Files**
 
-**Use 7: Generate KNN graph using exact K-mer distances but using LSH pre-filtering.**
+For text files or specialized formats where you want to treat each line as a complete entity without breaking it into k-mers, use the `--whole-line` option:
+
+```
+dashing2 sketch --whole-line --cmpout <outfile> text1.txt text2.txt <...>
+```
+
+This is particularly useful for:
+- Comparing text files line-by-line
+- Processing custom file formats where each line represents a complete record
+- BED files where you want to compare entire lines rather than interval contents
+
+Example:
+```
+# Create two text files
+$ cat > file1.txt
+line1
+line2
+line3
+
+$ cat > file2.txt
+line1
+line2
+line4
+
+# Compare them with whole-line sketching
+$ dashing2 sketch --whole-line --cmpout similarity.txt file1.txt file2.txt
+
+# View the similarity matrix
+$ cat similarity.txt
+2
+file1.txt
+file2.txt
+0.6667
+```
+
+In this mode, each line is hashed as a complete entity and those hashes are used in the sketch, rather than breaking lines into k-mers.
+
+Clustering: scipy.cluster.hierarchy and fastcluster.hierarchy yield fast, concise clusterings, if distances are emitted.
+
+To perform query-set vs reference-set comparison, see `-Q/--qfile` usage -- this yields a full rectangular matrix.
+
+This is particularly useful for asymmetric similarities, such as containment.
+
+
+**Use 8: Generate KNN graph using exact K-mer distances but using LSH pre-filtering.**
 
 You can do this for exact k-mer sets:
 

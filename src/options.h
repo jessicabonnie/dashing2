@@ -57,7 +57,8 @@ enum OptArg {
     OPTARG_PAIRLIST,
     OPTARG_USZ,
     OPTARG_DUMMY,
-    OPTARG_SEQS_IN_RAM
+    OPTARG_SEQS_IN_RAM,
+    OPTARG_WHOLE_LINE
 };
 
 #define SHARED_OPTS \
@@ -479,6 +480,7 @@ static constexpr const char *siglen =
         "  6. Disabling Canonicalization (--no-canon). By default, DNA alphabet k-mers are canonicalized to abstract strand. --no-canon causes Dashing2 to be strand-specific.\n"\
         "  7. Seed (--seed). To draw samples from a new hash function, you can provide a seed to the analysis.\n"\
         "  8. K-mer filtering, such as from a set of sequences, downsampling, or minimum count. See Detailed Filtering Options below for details.\n"\
+        "  9. Whole-line sketching (--whole-line). Treat each line as a whole, without breaking into k-mers. Useful for text files or specialized formats.\n"\
         "Detailed Sequence Parsing Options\n"\
         "-k/--kmer-length: set k. Defaults to the largest k expressible directly in uint64_t.\n"\
         "If k is greater than this limit (31 for DNA, 14 for --protein, 22 for --protein8, 24 for --protein6), then rolling hashes will be generated instead of exact k-mer encodings.\n"\
@@ -686,6 +688,12 @@ static constexpr const char *siglen =
 
 
 extern size_t MEMSIGTHRESH;
+
+struct Dashing2Options {
+    // ... existing code ...
+    bool whole_line_sketch = false;  // Treat each line as a whole entity to sketch rather than breaking into k-mers
+    // ... existing code ...
+};
 
 }
 

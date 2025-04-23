@@ -35,6 +35,21 @@ std::pair<std::vector<RegT>, double> bed2sketch(const std::string &path, const D
     }
     for(std::string s;std::getline(ifs, s);) {
         if(s.empty() || s.front() == '#') continue;
+        
+        if(opts.whole_line_sketch_) {
+            // Process the entire line as a single entity
+            const uint64_t linehash = XXH3_64bits(s.data(), s.size());
+            if(opts.sspace_ == SPACE_SET) {
+                if(op) opss.update(linehash);
+                else   ss.update(linehash);
+            } else {
+                // For multiset or probability set, use 1.0 as the count/weight
+                ctr.add(linehash, 1.0);
+            }
+            continue;
+        }
+        
+        // Original BED file parsing logic
         char *p = s.data(), *p2;
         if((p2 = std::strchr(p, '\t')) == nullptr)
             throw std::invalid_argument(std::string("Malformed line: ") + s);
